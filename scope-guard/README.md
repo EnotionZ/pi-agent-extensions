@@ -1,6 +1,6 @@
 # scope-guard
 
-Blocks (or transparently substitutes) shell commands that are prone to hanging
+Blocks shell commands that are prone to hanging
 by walking far more of the filesystem than intended — either by literally
 targeting a broad root (`/`, `~`, `/System`, ...) or by recursively grepping a
 directory that contains `node_modules`/`.git` without excluding them.
@@ -13,10 +13,38 @@ was told.
 
 ## What it does
 
-### 1. Broad-root guard (`find`/`grep`/`ag`/`ls`/`du`/`tree`)
+### How a command is read
 
-Blocks a command (or the built-in `find`/`grep`/`ls` tools) when the target
-path — or the shell's cwd, if no path argument is given — resolves to one of:
+The command is tokenized roughly the way a shell would (quotes, escapes,
+`| || & && ; ( ) $( \``, process substitution, redirections, heredocs) and
+split into simple commands. Each restricted scanner is then judged only on
+**its own path arguments**, against a cwd that follows any `cd` earlier in the
+command. Redirection targets (`2> /dev/null`) are never arguments; heredoc
+bodies are data unless they are fed to a shell (`bash <<EOF`), and `bash -c
+"..."` is analysed recursively.
+
+An earlier version matched a scanner name anywhere in the command and then any
+whitespace-preceded `/...` anywhere in the command, so `sed 's/a: /b/' f &&
+npm test | grep passed`, a TypeScript `//` comment inside a heredoc, or a
+commit message saying "find the / bug" were all blocked as "grep targeting
+`/`". Those cases are pinned in `scope-check.test.ts`.
+
+### 1. Broad-root guard
+
+Blocks a walker when its target path (or the cwd, when it has none) resolves
+to a broad root:
+
+| Command | Judged when |
+| --- | --- |
+| `find` | always, on its starting points |
+| `grep`/`egrep`/`fgrep` | only when recursive (`-r`, `-R`, `--recursive`, `-d recurse`); a plain grep reads files or stdin |
+| `ls` | only with `-R`; `ls /` or `ls ~` lists one level and returns instantly |
+| `tree` | unless `-L` bounds the depth |
+| `du` | always; `-s`/`-d` still walk everything |
+| `ag` | always (recursive by default) |
+| built-in `find`/`grep`/`ls` tools | on their `path` argument |
+
+Broad roots:
 
 - `/` (filesystem root)
 - a bare home directory (`~` or `/Users/you`)
@@ -30,15 +58,14 @@ Anywhere else is fair game — this is not a project sandbox, it only stops the
 `fd`/`rg` are exempt entirely: they're already the fast, `.gitignore`-aware
 alternative this guard would otherwise point you toward.
 
-**Auto-substitution for `find`:** a simple `find <broad-root> [-maxdepth N]
-[-type f|d] -name|-iname '<pattern>'` — no `-exec`, no other predicates, no
-pipes/chains — gets transparently rewritten to the `mdfind` (Spotlight)
-equivalent and actually executed, capped at 50 results, instead of just being
-refused. A trailing notice (`[scope-guard] substituting "..." with "..."`) is
-appended to the tool result so the substitution is visible and can't be lost
-to truncation. Anything more complex than that shape (content search,
-`-exec`, non-trivial predicates) is too risky to auto-translate and is just
-blocked with a suggestion.
+**It only blocks; it never rewrites.** The block reason tells the agent to
+scope the search to a likely directory and use `fd`/`rg`/`find`/`grep` there.
+An earlier version rewrote a simple `find <broad-root> -name X` into an
+`mdfind` (Spotlight) query. That was dropped: Spotlight lags newly created
+files and skips some paths (`.git` internals, some volumes), so the
+substituted query could return nothing for a file that exists, which the agent
+reads as "not found" rather than "blocked". Seen in practice with a file
+created minutes earlier.
 
 ### 2. Unbounded recursive `grep` guard
 
@@ -58,11 +85,10 @@ Blocked when:
   the shell's cwd) contains `node_modules` or `.git` as an immediate child.
 
 Target-aware, not just cwd-aware: `grep -rn TODO scripts/` from a repo root
-that has `node_modules` is fine, because `scripts/` itself doesn't. Best-effort
-argument parsing (`extractGrepTargets`) skips flags and their values to find
-the real target; it deliberately tolerates misparsing shell redirects like
-`2>/dev/null` as a stray extra target, since that only produces a harmless
-nonexistent path — it never causes an under-detection.
+that has `node_modules` is fine, because `scripts/` itself doesn't. Argument
+parsing skips flags and their values (`-e PATTERN`, `-m N`, `--include=...`)
+to find the real targets. `xargs grep -r ...` with no explicit target takes
+its targets from stdin, so it is not judged against the cwd.
 
 **Escape hatch:** if a search genuinely needs to look inside `node_modules` or
 `.git` (a specific vendored package), targeting that path directly (or `cd`ing
@@ -78,18 +104,29 @@ e.g. a large mounted volume you never want scanned:
 PI_SCOPE_EXTRA_DENY="/Volumes/BigDrive:/mnt/nas"
 ```
 
+## Layout and tests
+
+| File | |
+| --- | --- |
+| `index.ts` | wires the checker into pi's `tool_call` hook |
+| `scope-check.ts` | pure tokenizer and checker (`createScopeChecker`, `tokenize`) |
+| `scope-check.test.ts` | regressions, still-allowed, still-blocked, no-rewrite |
+
+```bash
+node --test *.test.ts
+```
+
+Extensions only load at session start or `/reload` (or a host restart under
+pm2), so test the module directly rather than through a live session.
+
 ## Known limitations
 
-- The `find`→`mdfind` translator only understands `-maxdepth`/`-mindepth`,
-  `-type`, `-name`/`-iname`, `-print`/`-print0`. Anything else (predicates,
-  `-exec`, pipes, `;`/`&`) falls back to a hard block rather than risk a wrong
-  translation.
-- `mdfind` reflects the Spotlight index, not a live filesystem view — it can
-  miss recently created files or paths excluded from indexing (some network
-  volumes, `.git` internals).
-- Grep target extraction is a best-effort tokenizer, not a real shell parser.
-  It doesn't understand full quoting/escaping edge cases; when in doubt it
-  favors *not* under-detecting real risk over being byte-perfect.
+- The tokenizer is best-effort, not a real shell parser. A command
+  substitution inside double quotes (`"$(find / ...)"`) stays part of the
+  quoted word and is not analysed; `eval` and scripts run from files are not
+  followed.
+- `cd` tracking is linear: a `cd` inside a subshell `( ... )` is treated as if
+  it persisted.
 
 ## History
 
@@ -99,7 +136,11 @@ edits look like they weren't taking effect) is written up in
 `personal-notes/AI/pi-coding-agent.md`. Short version: v1 tried to keep the
 agent inside a workspace root (too restrictive, wrong default under a hosted
 process); v2–v3 dropped that in favor of only blocking genuinely broad roots
-and added the `mdfind` substitution; this version adds the recursive-grep
-check and fixes a `process.cwd()` vs. `ctx.cwd()` bug that made the guard
-judge every session against the *host* process's directory instead of the
-session's real one under a persistently-running host like `pi-web`/pm2.
+and added the `mdfind` substitution; v4 added the recursive-grep check and
+fixed a `process.cwd()` vs. `ctx.cwd()` bug that made the guard judge every
+session against the *host* process's directory instead of the session's real
+one under a persistently-running host like `pi-web`/pm2. v5 replaced the
+whole-command regex matching with a shell-aware tokenizer (per-command
+arguments, redirections, heredocs, `cd` tracking) after `sed`/`perl`
+substitutions and heredoc comments were blocked as "grep targeting `/`", and
+dropped the `mdfind` substitution after it silently missed a real file.
