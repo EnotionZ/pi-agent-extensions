@@ -29,6 +29,20 @@ describe("EM_DASH_REMINDER", () => {
 		assert.match(lower, /comma .*conjunction|conjunction.*comma/, "no guidance tying comma to a following conjunction");
 	});
 
+	// Regression coverage: "code you are editing verbatim" did not cover an
+	// edit's old text in a docstring or Markdown file, so the model wrote an
+	// escape instead of the literal character and the edit matched nothing.
+	test("tells the model to reproduce existing em dashes literally in tool-call arguments", () => {
+		const lower = EM_DASH_REMINDER.toLowerCase();
+		assert.match(lower, /tool-call arguments/);
+		assert.match(lower, /literal character/);
+		assert.match(lower, /never an escape/);
+	});
+
+	test("scopes the prohibition to reply prose", () => {
+		assert.match(EM_DASH_REMINDER.toLowerCase(), /prose of your replies/);
+	});
+
 	test("explicitly warns against defaulting to a comma splice", () => {
 		assert.match(EM_DASH_REMINDER.toLowerCase(), /comma splice/);
 	});

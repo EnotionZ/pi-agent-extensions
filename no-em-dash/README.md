@@ -21,8 +21,9 @@ that guarantees the outcome. The prompt layer just makes it fire less often,
 and nudges the model toward constructions this layer doesn't have to fix.
 
 Both layers are scoped to the assistant's own prose: the reminder carves
-out code being read/quoted/edited verbatim, and the rewriter skips fenced
-code blocks and inline code spans entirely. Neither touches tool
+out tool-call arguments (edit old text, file contents, commands), where an
+existing em dash must be reproduced as the literal character, and the
+rewriter skips fenced code blocks and inline code spans entirely. Neither touches tool
 input/output, following the pattern in `../secret-guard/`, which hit a real
 failure mode doing exactly that (corrupted documentation and its own source
 by rewriting tool output instead of just the assistant's reply text).
@@ -82,6 +83,18 @@ fact, because it only ever sees text that already contains an em dash;
 text the model routed around a dash to produce never reaches it. Giving
 the model the procedure up front closes that gap at the source instead.
 
+### Tool-call arguments
+
+The carve-out used to say only "not about code you are reading, quoting, or
+editing verbatim". In a live session that did not cover an `Edit` whose old
+text had to match a docstring or Markdown line containing an em dash: it did
+not read as "code", so the model avoided the character and wrote an escape
+(`\\u2014`), which reached the tool as a literal backslash sequence and matched
+nothing. Several edits failed that way. The rewrite layer was not involved,
+since it only rewrites `text` blocks at `message_end` and never sees tool
+calls. The reminder now names tool-call arguments and says to write the
+literal character there, and `reminder.test.ts` pins that wording.
+
 ## Files
 
 | File | Purpose |
@@ -90,7 +103,7 @@ the model the procedure up front closes that gap at the source instead.
 | `em-dash.ts` | Pure rewrite logic, `replaceEmDashes(text)` |
 | `em-dash.test.ts` | 43 tests for the rewrite rules |
 | `reminder.ts` | Pure prompt-building logic, `appendEmDashReminder(prompt)` |
-| `reminder.test.ts` | 8 tests for the reminder |
+| `reminder.test.ts` | 10 tests for the reminder |
 
 Kept as a folder (not a single top-level `*.ts` file) specifically so the
 logic in `em-dash.ts`/`reminder.ts` can be imported and unit-tested without
