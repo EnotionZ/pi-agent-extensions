@@ -99,11 +99,40 @@ literal character there, and `reminder.test.ts` pins that wording.
 
 | File | Purpose |
 | --- | --- |
-| `index.ts` | Registers both hooks on the `ExtensionAPI` |
+| `index.ts` | Registers all three hooks on the `ExtensionAPI` |
 | `em-dash.ts` | Pure rewrite logic, `replaceEmDashes(text)` |
-| `em-dash.test.ts` | 43 tests for the rewrite rules |
+| `em-dash.test.ts` | Tests for the rewrite rules |
 | `reminder.ts` | Pure prompt-building logic, `appendEmDashReminder(prompt)` |
-| `reminder.test.ts` | 10 tests for the reminder |
+| `reminder.test.ts` | Tests for the reminder |
+| `escape-guard.ts` | Pure repair logic, `repairEscapedDashes(text)` / `isProsePath(path)` |
+| `escape-guard.test.ts` | Tests for the escape-sequence repair |
+
+Run `node --test *.test.ts` in this folder for the current count; it has grown several times
+during testing and will likely grow again.
+
+## A third layer: the escape-sequence guard (`tool_call`)
+
+The reminder's tool-call-argument carve-out (see [The reminder](#the-reminder-reminderts)) turned
+out not to be enough on its own. Across one real session, drafting new Markdown prose that legitimately
+wanted a real em dash (not reproducing anything -- this is a plan/docs corpus that uses em dashes as
+house style), the model wrote the literal six characters `\u2014` instead of the actual character
+three separate times. Each one was only caught by grepping the result afterward.
+
+`escape-guard.ts` closes that gap the same way `em-dash.ts` closes the equivalent one for chat
+replies: don't rely on the instruction landing every time, verify and repair mechanically. It hooks
+`tool_call` for `write` and `edit`, and before the tool executes:
+
+- Repairs `write`'s `content` and `edit`'s `newText` -- the fields that become what's actually on
+  disk -- but never `edit`'s `oldText`, which has to match existing bytes; a wrong one just fails the
+  edit visibly ("text not found"), which needs no fix and would be actively dangerous to "fix" by
+  guessing.
+- Only for prose paths (`.md`, `.mdx`, `.markdown`, `.txt`). A literal `"\u2014"` inside a `.ts`/`.py`
+  string literal is the normal, correct way to encode that character in source code; this guard can't
+  tell "meant literally" from "meant as a mistake" inside code, so it doesn't try.
+- Only outside code spans/fences within that prose (reusing `em-dash.ts`'s own `splitCodeAndProse`),
+  so a document that quotes the escape sequence as a documented example -- inside backticks, the
+  convention this workspace already uses -- survives untouched. (This paragraph is exactly that kind
+  of example, which is why `\u2014` above stays inside backticks throughout this section.)
 
 Kept as a folder (not a single top-level `*.ts` file) specifically so the
 logic in `em-dash.ts`/`reminder.ts` can be imported and unit-tested without

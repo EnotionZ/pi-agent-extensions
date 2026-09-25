@@ -43,10 +43,43 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { replaceEmDashes } from "./em-dash.ts";
 import { appendEmDashReminder } from "./reminder.ts";
+import { isProsePath, repairEscapedDashes } from "./escape-guard.ts";
 
 export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event) => {
 		return { systemPrompt: appendEmDashReminder(event.systemPrompt) };
+	});
+
+	// Third layer, added after the reminder's tool-call-argument carve-out
+	// still wasn't enough in practice: across one real session, the model
+	// wrote the literal six characters `\u2014` instead of a real em dash
+	// three separate times while drafting new Markdown prose, caught only by
+	// grepping the result afterward each time. Deterministically repair it
+	// before the tool executes, the same "verify, don't just instruct"
+	// principle as the rewrite layer below -- scoped tightly (see
+	// escape-guard.ts's docstring): prose paths only, never `oldText` (which
+	// has to match existing bytes; a wrong one just fails the edit visibly,
+	// which needs no fix), and never inside code spans/fences, so a document
+	// that quotes the escape sequence as an example -- like this bug report
+	// itself -- survives untouched.
+	pi.on("tool_call", (event) => {
+		if (event.toolName === "write") {
+			const input = event.input as { path: string; content: string };
+			if (!isProsePath(input.path)) return undefined;
+			const { text, count } = repairEscapedDashes(input.content);
+			if (count > 0) input.content = text;
+			return undefined;
+		}
+		if (event.toolName === "edit") {
+			const input = event.input as { path: string; edits: { oldText: string; newText: string }[] };
+			if (!isProsePath(input.path)) return undefined;
+			for (const edit of input.edits) {
+				const { text, count } = repairEscapedDashes(edit.newText);
+				if (count > 0) edit.newText = text;
+			}
+			return undefined;
+		}
+		return undefined;
 	});
 
 	pi.on("message_end", async (event) => {

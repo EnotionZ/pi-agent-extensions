@@ -216,7 +216,8 @@ function lastClauseOf(before: string): string {
 	return (lastClauseMatch?.[0] ?? stripped).trim().toLowerCase();
 }
 
-interface Segment {
+/** Shared with escape-guard.ts, which needs the same code/prose split. */
+export interface Segment {
 	/** Literal text to pass through untouched (code spans, fences). */
 	literal?: string;
 	/** Prose text eligible for em dash rewriting. */
@@ -228,7 +229,7 @@ interface Segment {
  * content is never rewritten. Handles fenced code blocks (```...```) and
  * inline code spans (`...`).
  */
-function splitCodeAndProse(text: string): Segment[] {
+export function splitCodeAndProse(text: string): Segment[] {
 	const segments: Segment[] = [];
 	// Fenced blocks first (```...```, greedy across lines, non-greedy match),
 	// then inline spans (`...`, no backtick inside). Alternate capture keeps
