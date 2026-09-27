@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { repairEscapedDashes, isProsePath } from "./escape-guard.ts";
+import { repairEscapedDashes, repairEscapedUnicode, isProsePath } from "./escape-guard.ts";
 
 describe("isProsePath", () => {
 	test("markdown paths are prose", () => {
@@ -81,5 +81,35 @@ describe("repairEscapedDashes", () => {
 		const twice = repairEscapedDashes(once.text);
 		assert.equal(twice.count, 0);
 		assert.equal(twice.text, once.text);
+	});
+});
+
+// The guard generalized from dash-only to any 4-hex-digit `\uXXXX` escape
+// after the same mistyped-escape mistake recurred for other codepoints
+// (checkmarks, curly quotes) across real sessions. `repairEscapedDashes` is
+// now an alias of `repairEscapedUnicode`; these tests exercise the wider set
+// directly under the new name.
+describe("repairEscapedUnicode", () => {
+	test("repairs a mistyped checkmark escape", () => {
+		const result = repairEscapedUnicode("Status: \\u2705 Done");
+		assert.equal(result.text, "Status: \u2705 Done");
+		assert.equal(result.count, 1);
+	});
+
+	test("repairs mistyped curly quotes", () => {
+		const result = repairEscapedUnicode("\\u201cquoted\\u201d");
+		assert.equal(result.text, "\u201cquoted\u201d");
+		assert.equal(result.count, 2);
+	});
+
+	test("is the same function repairEscapedDashes now aliases", () => {
+		assert.equal(repairEscapedDashes, repairEscapedUnicode);
+	});
+
+	test("still respects the code-span carve-out for a non-dash codepoint", () => {
+		const s = "it wrote a literal `\\u2705` escape sequence instead of the character.";
+		const result = repairEscapedUnicode(s);
+		assert.equal(result.text, s);
+		assert.equal(result.count, 0);
 	});
 });
